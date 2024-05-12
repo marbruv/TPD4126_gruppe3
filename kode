@@ -1,0 +1,456 @@
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_NeoPixel.h>
+#include <Wire.h>
+
+#define NUM_ROWS 3 // Antall rader
+#define NUM_COLS 4 // Antall kolonner
+#define RESET_BUTTON 12 //inngang reset-knapp
+#define NUM_LEDS 288    //antall led-pærer
+#define LED_PIN 6    //inngang led-ringer
+#define LEDS_PER_BUTTON (NUM_LEDS/12) //antall leds per knapp
+
+LiquidCrystal_I2C lcd1(0x27,16,2);
+LiquidCrystal_I2C lcd2(0x26,16,2);
+
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+int activateRowPins[NUM_ROWS] = {3, 4, 5};
+int colInputPins[NUM_COLS] = {10, 9, 8, 7};
+
+bool buttonMatrixValues[NUM_ROWS][NUM_COLS];
+int lastButtonNum = -1; // Initialiser siste knappenummer til en ugyldig verdi
+
+enum GameStates {
+  WAITING_TO_START,
+  GAME_IN_PROGRESS,
+  GAME_OVER
+};
+
+GameStates gameState = WAITING_TO_START;
+
+unsigned long gameOverStartTime = 0; // Lagrer starttidspunktet for GAME_OVER-tilstanden
+unsigned long initialRoundTime = 4200; // Start med 4 sekunder
+unsigned long timeReductionPerRound = 80; 
+unsigned long roundStartTime;
+unsigned long initialDelay = 1000;
+unsigned long delayReductionPerRound = 40;
+
+int randomButton;
+int counter = 0;
+int pressedButton;
+unsigned long elapsedTime;
+bool roundInProgress = false;
+
+// Arrays av adjektiver og substantiver
+const char* adjectives[] = {"Snill", "Brun", "Redd", "Kul", "Rar"};
+const char* nouns[] = {"Hund", "Katt", "Hest", "Fisk", "Ku"};
+
+// Variabler for å lagre high score og tilhørende nnavn
+int highScore = 0;
+String highScoreName = "";
+String playerName = "";
+
+//Ulike farger for led-ringene
+uint32_t colors[] = {
+  strip.Color(0, 255, 0),     // Grønn
+  strip.Color(0, 0, 255),     // Blå
+  strip.Color(255, 255, 0),   // Gul
+  strip.Color(255, 0, 255),   // Magenta
+  strip.Color(0, 255, 255),   // Cyan
+  strip.Color(255, 165, 0),   // Oransje
+  strip.Color(255, 192, 203), // Rosa
+  strip.Color(128, 0, 128),   // Fiolett
+  strip.Color(255, 255, 255), // Hvit
+  strip.Color(128, 128, 128), // Grå
+  strip.Color(255, 255, 0),   // Lyse gul
+  strip.Color(0, 128, 0),     // Mørk grønn
+  strip.Color(0, 0, 128),     // Mørk blå
+};
+
+void setupButtonMatrix() {
+  for (int i = 0; i < NUM_ROWS; i++) {
+    pinMode(activateRowPins[i], OUTPUT);
+    digitalWrite(activateRowPins[i], HIGH); //Høyt signal betyr betyr at den er deaktivert
+  }
+
+  for (int j = 0; j < NUM_COLS; j++) {
+    pinMode(colInputPins[j], INPUT_PULLUP); // Inngangspinne for alle kolonner er PULLUP slik at de aktiveres av et lavt signal
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  randomSeed(analogRead(0)); //Initialiserer den tilfeldige tallgeneratoren ved å bruke en analog leseverdi som frø
+
+  setupButtonMatrix();
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+
+  strip.begin();
+  strip.show();
+
+  lcd1.init();
+  lcd1.backlight();
+  lcd1.clear();
+  delay(100);
+  lcd1.setCursor(0,0);
+  lcd1.print("Trykk en");
+  lcd1.setCursor(0,1);
+  lcd1.print("knapp!");
+
+  lcd2.init();
+  lcd2.backlight();
+  lcd2.clear();
+  delay(100);
+  lcd2.setCursor(0,0);
+  lcd2.print("Dagens highscore");
+  lcd2.setCursor(0,1);
+  lcd2.print("Snill Hund: 1");
+}
+
+String generateRandomName() {
+  // Velg tilfeldig adjektiv og substantiv
+  String adjective = adjectives[random(0, sizeof(adjectives) / sizeof(adjectives[0]))];
+  String noun = nouns[random(0, sizeof(nouns) / sizeof(nouns[0]))];
+
+  return adjective + " " + noun;
+}
+
+void startGame() {
+  counter = 1;
+  playerName = generateRandomName(); //Generer tilfeldig navn
+
+  lcd2.begin(16, 2);
+  lcd2.clear();
+  lcd2.setCursor(0, 0);
+  lcd2.print("Highscore");
+  lcd2.setCursor(0, 1);
+  lcd2.print(highScoreName + ": " + String(highScore));
+  
+  gameState = GAME_IN_PROGRESS;
+  roundInProgress = true;
+
+  lcd2.clear();
+  lcd2.setCursor(0, 0);
+  lcd2.print("Ditt rundenavn: ");
+  lcd2.setCursor(0, 1);
+  lcd2.print(playerName);
+  
+  delay(50);
+
+  lcd1.clear();
+  lcd1.setCursor(0, 0);
+  lcd1.print("Starter om");
+  lcd1.setCursor(0, 1);
+  lcd1.print("3");
+  for (int i = 0; i < 96; i++) {
+    strip.setPixelColor(i, strip.Color(0, 0, 255));
+  }
+  strip.show();
+
+  delay(500);
+
+  lcd1.setCursor(0, 1);
+  lcd1.print("2");
+  strip.clear();
+  delay(300);
+  for (int i = 96; i < 192; i++) {
+    strip.setPixelColor(i, strip.Color(0, 0, 255));
+  }
+  strip.show();
+
+  delay(500);
+
+  lcd1.setCursor(0, 1);
+  lcd1.print("1");
+  strip.clear();
+  delay(300);
+  for (int i = 192; i < 288; i++) {
+    strip.setPixelColor(i, strip.Color(0, 255, 0));
+  }
+  strip.show();
+
+  delay(500);
+
+  strip.clear();
+  lcd1.clear();
+  startRound();
+
+  pressedButton = -1;
+}
+
+void startRound() {
+  randomButton = random(1, NUM_ROWS * NUM_COLS + 1);
+  // Velg en tilfeldig farge fra listen
+  uint32_t randomColor = colors[random(0, sizeof(colors) / sizeof(colors[0]))];
+
+  Serial.print("Random button:");
+  Serial.println(randomButton);
+
+  lcd1.clear();
+  lcd1.setCursor(0, 0);
+  lcd1.print("Poeng:");
+  lcd1.setCursor(0, 1);
+  lcd1.print(counter-1);
+  delay(50);
+
+  int startingLED = (randomButton - 1) * LEDS_PER_BUTTON;
+  for (int i = startingLED; i < startingLED + LEDS_PER_BUTTON; i++) {
+    strip.setPixelColor(i, randomColor);
+  }
+  strip.show();
+
+  roundStartTime = millis(); //Lagrer tiden da hver runde starter
+  
+  initialRoundTime -= timeReductionPerRound; //Oppdaterer initialRoundTime med den nye verdien for den neste runden
+  if (initialRoundTime < 300) {
+    initialRoundTime = 300; //Setter en minimumsgrense på 0,3 sekunder
+  }
+  
+  Serial.println(initialRoundTime);
+}
+
+void updateButtonMatrixValues() {
+  for (int row = 0; row < NUM_ROWS; row++) {
+    digitalWrite(activateRowPins[row], LOW); //Aktiver raden ved å sette den til LAV
+    for (int col = 0; col < NUM_COLS; col++) {
+
+      if (digitalRead(colInputPins[col]) == LOW) { //Hvis inngangspinnen for kolonnen er LAV, er den koblet til gjeldende radutgang
+        buttonMatrixValues[row][col] = true;
+      } 
+      else {
+        buttonMatrixValues[row][col] = false;
+      }
+    }
+    digitalWrite(activateRowPins[row], HIGH); //Deaktiver raden ved å sette den til HØY, noe som ikke vil endre en inngangspinne under en lesing
+  }
+}
+
+int buttonNumber(uint16_t binary) {
+  
+  if (binary == 0b100000000000) {
+    return 12;
+  } else if (binary == 0b010000000000) {
+    return 11;
+  } else if (binary == 0b001000000000) {
+    return 10;
+  } else if (binary == 0b000100000000) {
+    return 9;
+  } else if (binary == 0b000010000000) {
+    return 8;
+  } else if (binary == 0b000001000000) {
+    return 7;
+  } else if (binary == 0b000000100000) {
+    return 6;
+  } else if (binary == 0b000000010000) {
+    return 5;
+  } else if (binary == 0b000000001000) {
+    return 4;
+  } else if (binary == 0b000000000100) {
+    return 3;
+  } else if (binary == 0b000000000010) {
+    return 2;
+  } else if (binary == 0b000000000001) {
+    return 1;
+  } 
+}
+
+int checkButtonPress() {
+  uint16_t binary = 0;
+
+  for (int row = 0; row < NUM_ROWS; row++) {
+    for (int col = 0; col < NUM_COLS; col++) {
+      if (buttonMatrixValues[row][col]) {
+        binary |= (1 << (row * NUM_COLS + col)); //Sett tilsvarende bit i den binære representasjonen
+        int buttonNum = buttonNumber(binary);
+        if (buttonNum != -1 && buttonNum != lastButtonNum) {
+          return buttonNum;
+        }
+      }
+    }
+  }
+  return -1;
+}
+
+void debugButtonMatrix() {
+  Serial.print("Button matrix values: ");
+  for (int row = 0; row < NUM_ROWS; row++) {
+    for (int col = 0; col < NUM_COLS; col++) {
+      Serial.print(buttonMatrixValues[row][col]);
+    }
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+void handleButtonPress(int buttonIndex) {
+  strip.clear();
+  strip.show();
+
+  if (buttonIndex == randomButton) {
+    counter++;
+    roundStartTime -= 100;
+    delay(initialDelay);
+    initialDelay -= delayReductionPerRound; //Oppdaterer initialDelay med den nye verdien for den neste runden
+    
+    if (initialDelay <= 150) {
+      initialDelay = 150; //Sett en minimumsgrense på 0,15 sekunder
+    }
+    //Serial.println(initialDelay);
+    startRound();
+
+  } 
+  else {
+    endGame();
+  }
+}
+
+void endGame() {
+  gameState = GAME_OVER;
+  elapsedTime = millis() - roundStartTime; //Beregner hvor lang tid som har gått siden starten av runden
+
+  //Setter LED-fargen til rød for trykk av feil knapp
+  if (pressedButton != randomButton) {
+    int wrongButtonLEDStart = (pressedButton - 1) * LEDS_PER_BUTTON;
+    int wrongButtonLEDEnd = wrongButtonLEDStart + LEDS_PER_BUTTON;
+    for (int i = wrongButtonLEDStart; i < wrongButtonLEDEnd; i++) {
+      strip.setPixelColor(i, strip.Color(255, 0, 0));
+    }
+    strip.show();
+  } 
+
+  //Setter LED-fargen til rød for gjeldende knapp hvis man har brukt for lang tid
+  if (elapsedTime >= initialRoundTime) {
+    int currentButtonLEDStart = (randomButton - 1) * LEDS_PER_BUTTON;
+    int currentButtonLEDEnd = currentButtonLEDStart + LEDS_PER_BUTTON;
+    for (int i = currentButtonLEDStart; i < currentButtonLEDEnd; i++) {
+      strip.setPixelColor(i, strip.Color(255, 0, 0));
+    }
+    strip.show();
+  }
+
+  lcd1.clear();
+  lcd1.setCursor(0, 0);
+  lcd1.print("GAME OVER!");
+  delay(1000);
+  lcd1.clear();
+  lcd1.setCursor(0, 0);
+  lcd1.print("Dine poeng: ");
+  lcd1.print(counter-1);
+  lcd1.setCursor(0, 1);
+  lcd1.print("Trykk reset");
+
+  //Sjekk om gjeldende poengsum slår high score
+  if (counter-1 > highScore) {
+    highScore = counter-1;
+    highScoreName = playerName;
+  }
+
+  //Vis high score på andre skjerm
+  lcd2.begin(16, 2);
+  lcd2.clear();
+  lcd2.setCursor(0, 0);
+  lcd2.print("Highscore:");
+  lcd2.setCursor(0, 1);
+  lcd2.print(highScoreName + ": " + String(highScore));
+  
+  roundInProgress = false; //Avslutt spillet
+  roundStartTime = initialRoundTime;
+}
+
+void resetGame() {
+  gameState = WAITING_TO_START;
+
+  //Slå av alle LED-er
+  strip.clear();
+  strip.show();
+
+  //Vis tilbakestill-melding
+  lcd1.clear();
+  lcd1.setCursor(0, 0);
+  lcd1.print("Trykk en");
+  lcd1.setCursor(0, 1);
+  lcd1.print("knapp!");
+  
+  //Tilbakestill initialRoundTime til 4 sekunder
+  initialRoundTime = 4200;
+  initialDelay = 1000;
+
+  gameOverStartTime = 0;
+  
+  delay(500);
+}
+
+void snakeRainbow() {
+  static int headPosition = 0;
+  static int tailPosition = -1;
+  static long lastUpdate = 0;
+
+  if (millis() - lastUpdate >= 50) {
+    lastUpdate = millis();
+
+    if (tailPosition >= 0) {
+      strip.setPixelColor(tailPosition, 0); // Slå av slangetuppen
+    }
+
+    headPosition = (headPosition + 1) % NUM_LEDS;
+    strip.setPixelColor(headPosition, strip.gamma32(strip.ColorHSV((headPosition * 65536L / NUM_LEDS) + (headPosition * 256))));
+
+    if (tailPosition < 0) {
+      tailPosition = headPosition;
+    } else {
+      tailPosition = (tailPosition + 1) % NUM_LEDS;
+    }
+
+    strip.show();
+  }
+}
+
+
+void loop() {
+  updateButtonMatrixValues();
+
+  switch (gameState) {
+    case WAITING_TO_START:
+      if (!roundInProgress && checkButtonPress() >= 0) {
+        startGame();
+      } else {
+        snakeRainbow(); //Kjør regnbuefunksjonen bare hvis ingen knapp er trykket og ingen runde er i gang
+      }
+      break;
+
+    case GAME_IN_PROGRESS:
+      pressedButton = -1;
+
+      updateButtonMatrixValues(); //Oppdater knappematrisens verdier
+
+      elapsedTime = millis() - roundStartTime; // Beregner hvor lang tid som har gått siden starten av runden
+      if (elapsedTime >= initialRoundTime) {
+        endGame();
+      }
+      
+      pressedButton = checkButtonPress();
+      if (pressedButton != -1) {
+        handleButtonPress(pressedButton);
+      }
+    
+      break;
+
+    case GAME_OVER:
+    // Sjekk om gameOverStartTime er 0, hvis det er det, lagre nåværende tidspunkt
+    if (gameOverStartTime == 0) {
+      gameOverStartTime = millis();
+    }
+
+    if (digitalRead(RESET_BUTTON) == LOW) {
+      resetGame(); // Tilbakestill spillet manuelt hvis resetknappen er trykket
+    } 
+    else if (millis() - gameOverStartTime >= 10000) {
+      resetGame(); // Gå tilbake til reset automatisk etter 10 sekunder
+      gameOverStartTime = 0;
+    }
+    break;
+  }
+
+    delay(50);
+}
